@@ -1,0 +1,9 @@
+controller.exe
+onnxruntime.dll
+*.pth
+*.onnx
+configs/.env
+Terraform/
+.vscode/
+.git/
+*.tfstate*

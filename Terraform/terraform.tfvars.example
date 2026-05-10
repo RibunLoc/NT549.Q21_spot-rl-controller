@@ -1,0 +1,42 @@
+# Sao chép file này thành terraform.tfvars và edit theo môi trường của bạn.
+# CHÚ Ý: terraform.tfvars KHÔNG commit lên Git (đã có trong .gitignore).
+
+# Region — phải có ít nhất 3 AZ
+aws_region = "ap-southeast-1"
+
+# Tên project (prefix tài nguyên)
+project_name = "spot-rl"
+environment  = "demo"
+
+# IP của bạn để SSH (lấy từ https://checkip.amazonaws.com/)
+# ⚠️ Đừng để 0.0.0.0/0 trong production!
+ssh_allowed_cidr = "YOUR.IP.HERE/32"
+
+# EC2 key pair tạo trước trong AWS Console
+# (EC2 → Network & Security → Key Pairs → Create)
+key_pair_name = "your-key-pair-name"
+
+# Email nhận budget alerts + SNS notifications
+alert_email = "you@example.com"
+
+# Monthly budget cap (USD)
+monthly_budget_usd = 50
+
+# Controller behavior
+enable_shadow_mode = true # an toàn — chỉ log decisions
+controller_image_tag = "latest"
+
+# Docker image (Docker Hub hoặc ECR URI)
+# Docker Hub: "yourusername/spot-rl-controller"
+# ECR:        "123456789.dkr.ecr.ap-southeast-1.amazonaws.com/spot-rl-controller"
+docker_image = "yourusername/spot-rl-controller"
+
+# Instance type controller — t3.small đủ cho demo
+controller_instance_type = "t3.small"
+
+# Jenkins Master credentials
+jenkins_admin_user = "admin"
+jenkins_admin_pass = "change-me-strong-password"
+
+# Jenkins Master URL — điền IP của DO droplet (hoặc EC2 nếu chạy trên AWS)
+jenkins_master_url = "http://YOUR_DROPLET_IP:8080"

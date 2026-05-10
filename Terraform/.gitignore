@@ -1,0 +1,16 @@
+# Terraform state — chứa secrets, tuyệt đối không commit
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+.terraform/
+.terraform.lock.hcl
+
+# Variable files với credentials
+terraform.tfvars
+*.auto.tfvars
+
+# Plan output
+*.tfplan
+
+# Backend config
+backend.config

@@ -1,0 +1,46 @@
+# ── Credentials / Secrets ─────────────────────────────
+.env
+*/.env
+configs/.env
+*.pem
+*.key
+*.p12
+
+# ── Terraform ─────────────────────────────────────────
+**/.terraform/
+*.tfstate
+*.tfstate.backup
+*.tfstate.lock.info
+.terraform.lock.hcl
+Terraform/terraform.tfvars        # chứa passwords, IPs thật
+Terraform/*.tfvars                 # bắt tất cả tfvars thật
+!Terraform/*.tfvars.example        # nhưng giữ lại file example
+
+# ── Go build artifacts ────────────────────────────────
+/bin/
+dist/
+*.exe
+*.dll
+*.so
+onnxruntime*.dll
+onnxruntime*.so
+onnxruntime*.dylib
+
+# ── ML model files (lớn, không cần trong repo) ────────
+models/*.onnx
+results/kaggle/
+*.onnx
+
+# ── Python / Notebook ─────────────────────────────────
+__pycache__/
+*.pyc
+.ipynb_checkpoints/
+
+# ── IDE ───────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+
+# ── OS ────────────────────────────────────────────────
+.DS_Store
+Thumbs.db
