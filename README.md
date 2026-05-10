@@ -1,7 +1,7 @@
 # spot-rl-controller
 
 Production controller cho hệ thống **Spot Instance RL Optimization**.  
-Nhận ONNX model được train từ [spot-rl-optimiztion](https://github.com/RibunLoc/spot-rl-optimiztion), thực thi các action quản lý EC2 Spot/On-Demand theo thời gian thực.
+Nhận ONNX model được train từ [spot-rl-optimiztion](https://github.com/RibunLoc/NT549.Q21_spot-rl-optimizer), thực thi các action quản lý EC2 Spot/On-Demand theo thời gian thực.
 
 ---
 
@@ -54,7 +54,7 @@ Nhận ONNX model được train từ [spot-rl-optimiztion](https://github.com/R
 
 | Repo | Vai trò |
 |------|---------|
-| [spot-rl-optimiztion](https://github.com/RibunLoc/spot-rl-optimiztion) | Train RL agent (Python, Gymnasium, PyTorch) — output `best_model.onnx` |
+| [spot-rl-optimiztion](https://github.com/RibunLoc/NT549.Q21_spot-rl-optimizer) | Train RL agent (Python, Gymnasium, PyTorch) — output `best_model.onnx` |
 | **spot-rl-controller** (repo này) | Runtime controller (Go) — load ONNX, thực thi action trên AWS thật |
 
 **Workflow:**
