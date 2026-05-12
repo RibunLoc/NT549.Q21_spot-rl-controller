@@ -263,6 +263,25 @@ func runStep(
 	metrics.HourlyCost.Set(s.HourlyCost)
 	metrics.SLAHealth.Set(collector.SLAHealth())
 
+	// Record per-pool state features — dùng để monitoring và export training data
+	snapshots := make([]metrics.PoolSnapshot, 0, len(pools))
+	for _, p := range pools {
+		snapshots = append(snapshots, metrics.PoolSnapshot{
+			InstanceType:  types.InstanceTypes[p.TypeIdx],
+			AZ:            types.AZNames[p.AZIdx],
+			SpotPrice:     p.SpotPrice,
+			ODPrice:       p.OnDemandPrice,
+			InterruptProb: p.InterruptProb,
+			SpotCount:     p.SpotCount,
+			OnDemandCount: p.OnDemandCount,
+			CPUUtil:       p.CPUUtil,
+			RAMUtil:       p.RAMUtil,
+			SPSScore:      p.SPSScore,
+			PriceCV24h:    p.PriceCV24h,
+		})
+	}
+	metrics.RecordPoolMetrics(snapshots)
+
 	// 4. Build action mask — chỉ argmax trên actions hợp lệ
 	mask := state.BuildActionMask(pools, depth.Pending, depth.Running)
 
