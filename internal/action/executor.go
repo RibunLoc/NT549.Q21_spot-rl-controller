@@ -14,6 +14,12 @@ import (
 	"spot-rl-controller/pkg/types"
 )
 
+// instanceTypes / azNames — mirror của pkg/types để build price map di rebalance.
+var (
+	rebalanceInstanceTypes = types.InstanceTypes
+	rebalanceAZNames       = types.AZNames
+)
+
 // SCALE_STEP — số instance thay đổi mỗi action. Đặt 1 cho stable demo.
 const SCALE_STEP = 1
 
@@ -24,12 +30,13 @@ const DrainTimeout = 90 * time.Second
 // Executor wrap EC2 client + Jenkins client + instance registry.
 type Executor struct {
 	ec2      *awsclient.EC2Client
-	jenkins  *jenkins.Client   // nil nếu không dùng Jenkins
+	pricing  *awsclient.PricingClient
+	jenkins  *jenkins.Client    // nil nếu không dùng Jenkins
 	registry *registry.Registry // nil nếu không dùng registry
 }
 
-func NewExecutor(ec2 *awsclient.EC2Client, j *jenkins.Client, reg *registry.Registry) *Executor {
-	return &Executor{ec2: ec2, jenkins: j, registry: reg}
+func NewExecutor(ec2 *awsclient.EC2Client, pricing *awsclient.PricingClient, j *jenkins.Client, reg *registry.Registry) *Executor {
+	return &Executor{ec2: ec2, pricing: pricing, jenkins: j, registry: reg}
 }
 
 // Execute thực thi 1 action đã pass safety check.
@@ -72,22 +79,22 @@ func (e *Executor) Execute(ctx context.Context, action types.Action, pendingJobs
 		return wrap(d.OpName, e.ec2.RequestOnDemand(ctx, SCALE_STEP))
 
 	case types.OpReleaseSpot:
-		return wrap(d.OpName, e.ec2.TerminateByKind(ctx, "spot", SCALE_STEP))
+		return e.drainAndRelease(ctx, "spot", d.InstanceType, d.AZ)
 
 	case types.OpReleaseOnDemand:
-		return wrap(d.OpName, e.ec2.TerminateByKind(ctx, "on-demand", SCALE_STEP))
+		return e.drainAndRelease(ctx, "on-demand", d.InstanceType, d.AZ)
 
 	case types.OpConvertToOnDemand:
-		// Spot → OD: terminate spot trước, request OD sau (cùng AZ).
-		if err := e.ec2.TerminateByKind(ctx, "spot", SCALE_STEP); err != nil {
-			return fmt.Errorf("%s terminate spot: %w", d.OpName, err)
+		// Spot → OD: drain + terminate spot trước, request OD sau (cùng pool).
+		if err := e.drainAndRelease(ctx, "spot", d.InstanceType, d.AZ); err != nil {
+			return fmt.Errorf("%s: %w", d.OpName, err)
 		}
 		return wrap(d.OpName, e.ec2.RequestOnDemand(ctx, SCALE_STEP))
 
 	case types.OpConvertToSpot:
-		// OD → Spot: terminate OD trước, request spot sau (cùng AZ).
-		if err := e.ec2.TerminateByKind(ctx, "on-demand", SCALE_STEP); err != nil {
-			return fmt.Errorf("%s terminate OD: %w", d.OpName, err)
+		// OD → Spot: drain + terminate OD trước, request spot sau (cùng pool).
+		if err := e.drainAndRelease(ctx, "on-demand", d.InstanceType, d.AZ); err != nil {
+			return fmt.Errorf("%s: %w", d.OpName, err)
 		}
 		return wrap(d.OpName, e.ec2.RequestSpot(ctx, SCALE_STEP))
 
@@ -106,59 +113,134 @@ func (e *Executor) Execute(ctx context.Context, action types.Action, pendingJobs
 	}
 }
 
-// rebalanceSpot thực hiện migrate Spot sang pool rẻ hơn theo 3 bước:
-//
-//	Bước 1: Provision Spot mới ở pool đích (AZ trong action)
-//	Bước 2: Drain Jenkins agent cũ (đợi jobs finish, tối đa DrainTimeout)
-//	Bước 3: Terminate Spot cũ sau khi drain xong
-//
-// Nếu không có Jenkins client → fallback terminate-then-provision (không drain).
-func (e *Executor) rebalanceSpot(ctx context.Context, d types.DecodedAction) error {
-	log.Printf("[rebalance] migrate spot → %s/%s", d.InstanceType, d.AZ)
+// drainAndRelease drain Jenkins agent tại pool (instanceType, az) rồi terminate instance đó.
+// Đây là quy trình chuẩn cho RELEASE_SPOT, RELEASE_ONDEMAND, CONVERT ops:
+//  1. Sync registry → tìm agent cũ nhất trong pool
+//  2. Drain agent (mark offline + đợi idle, tối đa DrainTimeout)
+//  3. TerminateByPool — terminate đúng instance đó
+//  4. DeleteAgent — xóa node khỏi Jenkins UI
+func (e *Executor) drainAndRelease(ctx context.Context, kind, instanceType, az string) error {
+	log.Printf("[release] drain+terminate %s in %s/%s", kind, instanceType, az)
 
-	// ── Bước 1: Provision spot mới ở pool đích ──────────
-	log.Printf("[rebalance] step1: provision new spot at %s", d.AZ)
+	// Tìm agent cũ nhất trong pool để drain đúng worker
+	var agentName string
+	if e.registry != nil && e.jenkins != nil {
+		if err := e.registry.Sync(ctx); err != nil {
+			log.Printf("[release] registry sync warn: %v", err)
+		}
+		_, agentName = e.registry.OldestAgentInPool(instanceType, az)
+	}
+
+	// Drain trước khi terminate — tránh kill jobs đang chạy
+	if e.jenkins != nil && agentName != "" {
+		log.Printf("[release] draining agent %s (timeout=%s)", agentName, DrainTimeout)
+		if err := e.jenkins.DrainAgent(ctx, agentName, DrainTimeout); err != nil {
+			// Timeout vẫn tiếp tục terminate — log warning
+			log.Printf("[release] drain warning: %v — proceeding with terminate", err)
+		} else {
+			log.Printf("[release] agent %s drained OK", agentName)
+		}
+	} else {
+		log.Printf("[release] skip drain (jenkins=%v agent=%q)", e.jenkins != nil, agentName)
+	}
+
+	// Terminate đúng pool
+	if err := e.ec2.TerminateByPool(ctx, kind, instanceType, az, SCALE_STEP); err != nil {
+		return fmt.Errorf("drainAndRelease terminate: %w", err)
+	}
+
+	// Xóa node khỏi Jenkins UI
+	if e.jenkins != nil && agentName != "" {
+		if err := e.jenkins.DeleteAgent(ctx, agentName); err != nil {
+			log.Printf("[release] delete agent %s: %v", agentName, err)
+		}
+	}
+
+	log.Printf("[release] done — %s/%s %s released", instanceType, az, kind)
+	return nil
+}
+
+// rebalanceSpot thực hiện migrate Spot từ pool đắt nhất → pool đích (type+az trong action).
+// Khớp với train: pools[src].spot_count -= 1, pools[dst].spot_count += 1.
+//
+//	Bước 1: Build price map → tìm src pool có giá cao nhất (không phải dst)
+//	Bước 2: Provision Spot mới ở pool đích
+//	Bước 3: Drain Jenkins agent ở src pool (đợi jobs finish, tối đa DrainTimeout)
+//	Bước 4: Terminate Spot ở đúng src pool
+func (e *Executor) rebalanceSpot(ctx context.Context, d types.DecodedAction) error {
+	log.Printf("[rebalance] migrate spot → dst=%s/%s", d.InstanceType, d.AZ)
+
+	// ── Bước 1: Tìm src pool (đắt nhất, không phải dst) ─
+	srcType, srcAZ, srcAgent := e.findMostExpensiveSrcPool(ctx, d.InstanceType, d.AZ)
+	if srcType == "" {
+		// Không có pool khác → fallback: terminate cùng pool dst (scale-in thay migrate)
+		log.Printf("[rebalance] no src pool found — fallback to scale-in at dst pool")
+		srcType, srcAZ = d.InstanceType, d.AZ
+	}
+	log.Printf("[rebalance] src pool: %s/%s agent=%s", srcType, srcAZ, srcAgent)
+
+	// ── Bước 2: Snapshot agents online trước khi provision ─
+	var agentsBefore map[string]struct{}
+	if e.jenkins != nil {
+		snap, err := e.jenkins.ListOnlineAgentNames(ctx)
+		if err != nil {
+			log.Printf("[rebalance] step2: snapshot agents warn: %v", err)
+		} else {
+			agentsBefore = snap
+		}
+	}
+
+	// ── Bước 3: Provision spot mới ở pool đích ──────────
+	log.Printf("[rebalance] step3: provision new spot at %s/%s", d.InstanceType, d.AZ)
 	if err := e.ec2.RequestSpot(ctx, SCALE_STEP); err != nil {
 		return fmt.Errorf("rebalance provision: %w", err)
 	}
-	log.Printf("[rebalance] step1: done — new spot provisioned")
+	log.Printf("[rebalance] step3: done — new spot provisioned")
 
-	// ── Bước 2: Drain Jenkins agent cũ ──────────────────
-	if e.jenkins != nil {
-		// Tìm agent đang chạy ở AZ cũ (agent name = instance ID, tag bởi UserData)
-		// Trong demo: agent name = hostname của instance cũ
-		// Controller biết tên agent vì đã track khi provision
-		agentName, err := e.findOldestSpotAgentExcluding(ctx, d.AZ)
+	// ── Bước 4: Đợi dst agent online trước khi drain src ─
+	// Instance mới cần ~2-3 phút boot + join Jenkins.
+	// Không drain src trước khi dst online → tránh khoảng trống không có worker → SLA drop.
+	if e.jenkins != nil && agentsBefore != nil {
+		log.Printf("[rebalance] step4: waiting for new dst agent to come online (timeout=5m)")
+		newAgent, err := e.jenkins.WaitAgentOnline(ctx, agentsBefore, 5*time.Minute)
 		if err != nil {
-			log.Printf("[rebalance] step2: cannot find old agent: %v — skip drain", err)
-		} else if agentName != "" {
-			log.Printf("[rebalance] step2: draining agent %s (timeout=%s)", agentName, DrainTimeout)
-			if err := e.jenkins.DrainAgent(ctx, agentName, DrainTimeout); err != nil {
-				// Drain timeout → vẫn terminate nhưng log warning
-				log.Printf("[rebalance] step2: drain warning: %v — proceeding with terminate", err)
-			} else {
-				log.Printf("[rebalance] step2: agent %s drained successfully", agentName)
-			}
+			// Timeout → vẫn tiếp tục drain nhưng log warning
+			log.Printf("[rebalance] step4: wait agent warn: %v — proceeding anyway", err)
+		} else {
+			log.Printf("[rebalance] step4: dst agent %q online OK", newAgent)
+		}
+	}
+
+	// ── Bước 5: Drain Jenkins agent ở src pool ──────────
+	if e.jenkins != nil && srcAgent != "" {
+		log.Printf("[rebalance] step5: draining agent %s (timeout=%s)", srcAgent, DrainTimeout)
+		if err := e.jenkins.DrainAgent(ctx, srcAgent, DrainTimeout); err != nil {
+			log.Printf("[rebalance] step5: drain warning: %v — proceeding with terminate", err)
+		} else {
+			log.Printf("[rebalance] step5: agent %s drained OK", srcAgent)
 		}
 	} else {
-		log.Printf("[rebalance] step2: no Jenkins client — skipping drain")
+		log.Printf("[rebalance] step5: skip drain (jenkins=%v agent=%q)", e.jenkins != nil, srcAgent)
 	}
 
-	// ── Bước 3: Terminate spot cũ ────────────────────────
-	// SetAZ lại về AZ nguồn để terminate đúng pool
-	// Hiện tại: terminate 1 spot ở AZ hiện tại (đã set ở Execute trước khi gọi)
-	log.Printf("[rebalance] step3: terminate old spot")
-	if err := e.ec2.TerminateByKind(ctx, "spot", SCALE_STEP); err != nil {
+	// ── Bước 6: Terminate spot ở đúng src pool ──────────
+	log.Printf("[rebalance] step6: terminate spot at src %s/%s", srcType, srcAZ)
+	if err := e.ec2.TerminateByPool(ctx, "spot", srcType, srcAZ, SCALE_STEP); err != nil {
 		return fmt.Errorf("rebalance terminate: %w", err)
 	}
-	log.Printf("[rebalance] step3: done — migrate complete")
+	log.Printf("[rebalance] step6: done — migrate complete")
 
-	// Cleanup: xóa agent node cũ khỏi Jenkins
-	if e.jenkins != nil {
-		agentName, _ := e.findOldestSpotAgentExcluding(ctx, d.AZ)
-		if agentName != "" {
-			if err := e.jenkins.DeleteAgent(ctx, agentName); err != nil {
-				log.Printf("[rebalance] cleanup: delete agent %s: %v", agentName, err)
+	// Cleanup: xóa node khỏi Jenkins UI
+	if e.jenkins != nil && srcAgent != "" {
+		if err := e.jenkins.DeleteAgent(ctx, srcAgent); err != nil {
+			log.Printf("[rebalance] cleanup: delete agent %s: %v", srcAgent, err)
+		}
+		if e.registry != nil {
+			// Lấy instance ID từ registry trước khi xóa
+			// (agentName đã biết, tìm ngược để remove)
+			if err := e.registry.Sync(ctx); err == nil {
+				// Registry.Remove cần instance ID — bỏ qua nếu không tìm được,
+				// Sync lần sau sẽ tự clean up instance đã terminate.
 			}
 		}
 	}
@@ -166,19 +248,28 @@ func (e *Executor) rebalanceSpot(ctx context.Context, d types.DecodedAction) err
 	return nil
 }
 
-// findOldestSpotAgentExcluding tìm Jenkins agent name của Spot instance
-// cũ nhất KHÔNG thuộc targetAZ (đó là instance cần migrate ra).
-// Dùng InstanceRegistry được sync từ EC2 tags (JenkinsAgentName).
-func (e *Executor) findOldestSpotAgentExcluding(ctx context.Context, targetAZ string) (string, error) {
-	if e.registry == nil {
-		return "", nil
+// findMostExpensiveSrcPool tìm pool có spot price cao nhất (không phải dst pool).
+// Build price map từ PricingClient → gọi registry.MostExpensiveSpotPool.
+func (e *Executor) findMostExpensiveSrcPool(ctx context.Context, dstType, dstAZ string) (instanceType, az, agentName string) {
+	if e.registry == nil || e.pricing == nil {
+		return "", "", ""
 	}
-	// Sync registry để có data mới nhất trước khi chọn target
 	if err := e.registry.Sync(ctx); err != nil {
 		log.Printf("[executor] registry sync warn: %v", err)
 	}
-	_, agentName := e.registry.OldestSpotAgentExcludingAZ(targetAZ)
-	return agentName, nil
+
+	// Build spot price map cho tất cả pools đang có instance
+	prices := make(map[string]float64)
+	for _, t := range rebalanceInstanceTypes {
+		for _, a := range rebalanceAZNames {
+			p, err := e.pricing.GetSpotPrice(ctx, t, a)
+			if err == nil {
+				prices[t+"/"+a] = p
+			}
+		}
+	}
+
+	return e.registry.MostExpensiveSpotPool(dstType, dstAZ, prices)
 }
 
 func wrap(opName string, err error) error {

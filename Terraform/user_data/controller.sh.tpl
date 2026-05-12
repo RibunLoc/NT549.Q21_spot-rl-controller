@@ -28,13 +28,14 @@ SUBNET_AZ_A=${subnet_az_a}
 SUBNET_AZ_B=${subnet_az_b}
 SUBNET_AZ_C=${subnet_az_c}
 
-# Worker config
+# Worker config — controller dùng launch template để launch spot workers
 WORKER_SECURITY_GROUP=${worker_sg_id}
 WORKER_IAM_PROFILE=${worker_iam_profile}
+WORKER_LAUNCH_TEMPLATE=${worker_launch_template}
 
 # Controller behavior
 SHADOW_MODE=${shadow_mode}
-LOOP_INTERVAL_SEC=300
+LOOP_INTERVAL_SEC=900
 EPISODE_STEPS=672
 MODEL_PATH=/opt/spot-rl/model.onnx
 

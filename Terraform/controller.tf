@@ -24,20 +24,21 @@ data "aws_ami" "al2023" {
 # Render template với vars để inject SQS URL, subnet IDs, region, etc.
 locals {
   controller_user_data = templatefile("${path.module}/user_data/controller.sh.tpl", {
-    aws_region         = var.aws_region
-    sqs_queue_url      = aws_sqs_queue.jobs.url
-    subnet_az_a        = aws_subnet.public[0].id
-    subnet_az_b        = aws_subnet.public[1].id
-    subnet_az_c        = aws_subnet.public[2].id
-    az_a               = data.aws_availability_zones.available.names[0]
-    az_b               = data.aws_availability_zones.available.names[1]
-    az_c               = data.aws_availability_zones.available.names[2]
-    worker_sg_id       = aws_security_group.worker.id
-    worker_iam_profile = aws_iam_instance_profile.worker.name
-    shadow_mode        = var.enable_shadow_mode ? "true" : "false"
-    image_tag          = var.controller_image_tag
-    docker_image       = var.docker_image
-    project_name       = var.project_name
+    aws_region              = var.aws_region
+    sqs_queue_url           = aws_sqs_queue.jobs.url
+    subnet_az_a             = aws_subnet.public[0].id
+    subnet_az_b             = aws_subnet.public[1].id
+    subnet_az_c             = aws_subnet.public[2].id
+    az_a                    = data.aws_availability_zones.available.names[0]
+    az_b                    = data.aws_availability_zones.available.names[1]
+    az_c                    = data.aws_availability_zones.available.names[2]
+    worker_sg_id            = aws_security_group.worker.id
+    worker_iam_profile      = aws_iam_instance_profile.worker.name
+    worker_launch_template  = aws_launch_template.worker.id
+    shadow_mode             = var.enable_shadow_mode ? "true" : "false"
+    image_tag               = var.controller_image_tag
+    docker_image            = var.docker_image
+    project_name            = var.project_name
   })
 }
 

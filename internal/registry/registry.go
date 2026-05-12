@@ -111,13 +111,64 @@ func (r *Registry) OldestSpotAgentExcludingAZ(targetAZ string) (instanceID, agen
 	var oldest *InstanceInfo
 	for _, info := range r.instances {
 		if info.AZ == targetAZ {
-			continue // đây là AZ đích, không phải AZ nguồn
+			continue
 		}
 		if oldest == nil || info.LaunchTime.Before(oldest.LaunchTime) {
 			oldest = info
 		}
 	}
 
+	if oldest == nil {
+		return "", ""
+	}
+	return oldest.InstanceID, oldest.AgentName
+}
+
+// MostExpensiveSpotPool trả về (instanceType, az, agentName) của Spot instance
+// thuộc pool có SpotPrice cao nhất, KHÔNG thuộc pool đích (dstType, dstAZ).
+// Dùng cho REBALANCE: khớp logic train — terminate pool đắt nhất, provision pool rẻ hơn.
+// spotPrices là map["instanceType/az"] → price, lấy từ PricingClient.
+func (r *Registry) MostExpensiveSpotPool(dstType, dstAZ string, spotPrices map[string]float64) (instanceType, az, agentName string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var best *InstanceInfo
+	bestPrice := -1.0
+
+	for _, info := range r.instances {
+		// Bỏ qua pool đích
+		if info.InstanceType == dstType && info.AZ == dstAZ {
+			continue
+		}
+		key := info.InstanceType + "/" + info.AZ
+		price := spotPrices[key]
+		if price > bestPrice {
+			bestPrice = price
+			best = info
+		}
+	}
+
+	if best == nil {
+		return "", "", ""
+	}
+	return best.InstanceType, best.AZ, best.AgentName
+}
+
+// OldestAgentInPool trả về (instanceID, agentName) của instance cũ nhất
+// trong pool (instanceType, az) — dùng cho RELEASE_SPOT/OD để drain đúng worker.
+func (r *Registry) OldestAgentInPool(instanceType, az string) (instanceID, agentName string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	var oldest *InstanceInfo
+	for _, info := range r.instances {
+		if info.InstanceType != instanceType || info.AZ != az {
+			continue
+		}
+		if oldest == nil || info.LaunchTime.Before(oldest.LaunchTime) {
+			oldest = info
+		}
+	}
 	if oldest == nil {
 		return "", ""
 	}

@@ -5,12 +5,47 @@
 set -euo pipefail
 exec > >(tee /var/log/jenkins-agent-bootstrap.log) 2>&1
 
+echo "=== Cloudwatch agent ==="
+date
+apt-get update -qq
+apt-get install -y -qq curl
+curl -sL https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb \
+    -o /tmp/amazon-cloudwatch-agent.deb
+dpkg -i /tmp/amazon-cloudwatch-agent.deb
+rm /tmp/amazon-cloudwatch-agent.deb
+cat > /opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json << 'EOF'
+{
+  "metrics": {
+    "namespace": "CWAgent",
+    "metrics_collected": {
+      "mem": {
+        "measurement": ["mem_used_percent"],
+        "metrics_collection_interval": 60
+      },
+      "cpu": {
+        "measurement": ["cpu_usage_active"],
+        "metrics_collection_interval": 60,
+        "totalcpu": true
+      }
+    },
+    "append_dimensions": {
+      "InstanceType": "${aws:InstanceType}",
+      "AvailabilityZone": "${aws:AvailabilityZone}"
+    }
+  }
+}
+EOF
+systemctl enable amazon-cloudwatch-agent
+/opt/aws/amazon-cloudwatch-agent/bin/amazon-cloudwatch-agent-ctl \
+    -a fetch-config -m ec2 \
+    -c file:/opt/aws/amazon-cloudwatch-agent/etc/amazon-cloudwatch-agent.json -s
+
+
 echo "=== Jenkins Agent Bootstrap ==="
 date
 
 # install awscli
-apt-get update -qq
-apt-get install -y -qq curl unzip
+apt-get install -y unzip
 
 # ────── Cài đặt awscli ───────────────────────────────────
 if ! command -v aws &> /dev/null; then
@@ -54,10 +89,10 @@ echo "jenkins : $JENKINS_URL"
 # ── 3. Install Java 21 ───────────────────────────────
 # Java version phải >= version Jenkins Master dùng.
 # class file 65.0 = Java 21, 61.0 = Java 17 — dùng sai version → UnsupportedClassVersionError
-echo "[3] Installing Java 21..."
+echo "[3] Installing Java 21 + Python deps..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq openjdk-21-jre curl
+apt-get install -y -qq openjdk-21-jre curl python3-pip python3-venv git
 
 # ── 4. Tạo Jenkins node qua Script Console ───────────
 echo "[4] Waiting for Jenkins to be ready..."

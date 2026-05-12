@@ -90,6 +90,10 @@ func NewCollector(ec2 *awsclient.EC2Client, sqs *awsclient.SQSClient, episodeSte
 //
 // Caller cung cấp pools đã được fetch song song (price + interrupt + util).
 // Hàm này chỉ build vector — không tự gọi AWS để dễ test.
+
+// SLAHealth trả về SLA health score hiện tại [0, 1].
+func (c *Collector) SLAHealth() float64 { return c.slaHealth }
+
 func (c *Collector) Collect(
 	ctx context.Context,
 	pools [types.NPools]types.PoolInfo,

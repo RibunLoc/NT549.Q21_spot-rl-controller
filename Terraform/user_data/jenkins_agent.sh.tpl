@@ -57,10 +57,10 @@ echo "jenkins : $JENKINS_URL"
 # ── 3. Install Java 21 ───────────────────────────────
 # Java version phải >= version Jenkins Master dùng.
 # class file 65.0 = Java 21, 61.0 = Java 17 — dùng sai version → UnsupportedClassVersionError
-echo "[3] Installing Java 21..."
+echo "[3] Installing Java 21 + Python deps..."
 export DEBIAN_FRONTEND=noninteractive
 apt-get update -qq
-apt-get install -y -qq openjdk-21-jre curl
+apt-get install -y -qq openjdk-21-jre curl python3-pip python3-venv git
 
 # ── 4. Tạo Jenkins node qua Script Console ───────────
 echo "[4] Waiting for Jenkins to be ready..."

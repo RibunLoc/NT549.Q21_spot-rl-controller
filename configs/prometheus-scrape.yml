@@ -1,0 +1,14 @@
+# Thêm đoạn này vào scrape_configs trong prometheus.yml trên droplet monitoring.
+# Controller expose /metrics tại port 9091.
+# Thay <CONTROLLER_IP> bằng IP thực của EC2 controller instance.
+
+scrape_configs:
+  - job_name: 'spot-rl-controller'
+    scrape_interval: 60s
+    authorization:
+      type: Bearer
+      credentials: 'change-me-strong-token'   # khớp với METRICS_TOKEN trong controller .env
+    static_configs:
+      - targets: ['<CONTROLLER_IP>:9091']
+        labels:
+          env: 'demo'

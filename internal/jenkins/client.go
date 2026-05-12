@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log"
 	"net/http"
 	"net/url"
 	"strings"
@@ -116,6 +117,68 @@ func (c *Client) GetAgentStatus(ctx context.Context, agentName string) (AgentSta
 		return AgentStatus{}, fmt.Errorf("agent status parse: %w", err)
 	}
 	return s, nil
+}
+
+// WaitAgentOnline đợi cho đến khi ít nhất 1 agent mới xuất hiện online trong Jenkins
+// so với snapshot agentsBefore. Dùng sau khi provision instance mới để đảm bảo
+// dst worker đã join trước khi drain src — tránh khoảng trống không có worker.
+func (c *Client) WaitAgentOnline(ctx context.Context, agentsBefore map[string]struct{}, timeout time.Duration) (string, error) {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		online, err := c.listOnlineAgents(ctx)
+		if err != nil {
+			log.Printf("[jenkins] WaitAgentOnline poll error: %v", err)
+		} else {
+			for _, name := range online {
+				if _, existed := agentsBefore[name]; !existed {
+					return name, nil // agent mới đã online
+				}
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return "", ctx.Err()
+		case <-time.After(15 * time.Second):
+		}
+	}
+	return "", fmt.Errorf("timeout %s waiting for new agent to come online", timeout)
+}
+
+// ListOnlineAgentNames trả về tên tất cả agents đang online — dùng để snapshot trước provision.
+func (c *Client) ListOnlineAgentNames(ctx context.Context) (map[string]struct{}, error) {
+	names, err := c.listOnlineAgents(ctx)
+	if err != nil {
+		return nil, err
+	}
+	m := make(map[string]struct{}, len(names))
+	for _, n := range names {
+		m[n] = struct{}{}
+	}
+	return m, nil
+}
+
+func (c *Client) listOnlineAgents(ctx context.Context) ([]string, error) {
+	type nodeResp struct {
+		Computer []struct {
+			DisplayName string `json:"displayName"`
+			Offline     bool   `json:"offline"`
+		} `json:"computer"`
+	}
+	body, err := c.get(ctx, "/computer/api/json?tree=computer[displayName,offline]")
+	if err != nil {
+		return nil, err
+	}
+	var r nodeResp
+	if err := json.Unmarshal(body, &r); err != nil {
+		return nil, err
+	}
+	var online []string
+	for _, n := range r.Computer {
+		if !n.Offline {
+			online = append(online, n.DisplayName)
+		}
+	}
+	return online, nil
 }
 
 // DrainAgent đánh dấu agent offline + đợi jobs hiện tại finish.

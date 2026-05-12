@@ -87,3 +87,21 @@ variable "jenkins_master_url" {
   type        = string
   default     = "http://REPLACE_WITH_DROPLET_IP:8080"
 }
+
+variable "dvc_data_bucket" {
+  description = "S3 bucket name chứa DVC data (training data cho RL agent)"
+  type        = string
+  default     = ""
+}
+
+variable "worker_ami_id" {
+  description = "AMI ID cho worker spot — Ubuntu 24 đã bake CloudWatch agent + Java 21"
+  type        = string
+  # Override trong tfvars sau khi tạo AMI từ jenkins_agent.sh
+}
+
+variable "worker_instance_types" {
+  description = "Danh sách instance types cho worker spot (theo thứ tự ưu tiên)"
+  type        = list(string)
+  default     = ["m5.large", "c5.xlarge", "r5.large", "m5.xlarge", "c5.2xlarge"]
+}

@@ -189,6 +189,20 @@ resource "aws_iam_role_policy" "worker" {
           }
         }
       },
+      # S3: DVC pull training data khi chạy Jenkins pipeline
+      # Chỉ active khi dvc_data_bucket được set trong tfvars
+      {
+        Sid    = "DVCDataRead"
+        Effect = var.dvc_data_bucket != "" ? "Allow" : "Deny"
+        Action = [
+          "s3:GetObject",
+          "s3:ListBucket",
+        ]
+        Resource = var.dvc_data_bucket != "" ? [
+          "arn:aws:s3:::${var.dvc_data_bucket}",
+          "arn:aws:s3:::${var.dvc_data_bucket}/*",
+        ] : ["arn:aws:s3:::placeholder"]
+      },
     ]
   })
 }

@@ -166,14 +166,75 @@ func (p *PricingClient) GetSpotPrice(ctx context.Context, instanceType, az strin
 	return price, nil
 }
 
-// GetOnDemandPrice trả về giá trị on-demand ($/hr)
+// GetPriceCV tính coefficient of variation (std/mean) của spot price trong 24h qua.
+// Khớp price_cv_24h trong training data. Fallback 0.0 nếu không đủ data.
+func (p *PricingClient) GetPriceCV(ctx context.Context, instanceType, az string) float64 {
+	output, err := p.ec2Client.DescribeSpotPriceHistory(ctx, &ec2.DescribeSpotPriceHistoryInput{
+		InstanceTypes:       []types.InstanceType{types.InstanceType(instanceType)},
+		AvailabilityZone:    aws.String(az),
+		ProductDescriptions: []string{"Linux/UNIX"},
+		StartTime:           aws.Time(time.Now().UTC().Add(-24 * time.Hour)),
+	})
+	if err != nil || len(output.SpotPriceHistory) < 2 {
+		return 0.0
+	}
+	prices := make([]float64, 0, len(output.SpotPriceHistory))
+	for _, item := range output.SpotPriceHistory {
+		v, err := strconv.ParseFloat(aws.ToString(item.SpotPrice), 64)
+		if err == nil && v > 0 {
+			prices = append(prices, v)
+		}
+	}
+	if len(prices) < 2 {
+		return 0.0
+	}
+	sum := 0.0
+	for _, v := range prices {
+		sum += v
+	}
+	mean := sum / float64(len(prices))
+	if mean <= 0 {
+		return 0.0
+	}
+	variance := 0.0
+	for _, v := range prices {
+		d := v - mean
+		variance += d * d
+	}
+	std := math.Sqrt(variance / float64(len(prices)))
+	return std / mean
+}
+
+// GetSpotPlacementScore gọi DescribeSpotPlacementScores để lấy SPS cho 1 pool.
+// SPS là số nguyên 1-10 (AWS) — chuẩn hóa về [0,1] để khớp training (default 0.8).
+// Fallback 0.8 nếu API không có dữ liệu hoặc lỗi (khớp training fallback).
+func (p *PricingClient) GetSpotPlacementScore(ctx context.Context, instanceType, az string) float64 {
+	out, err := p.ec2Client.GetSpotPlacementScores(ctx, &ec2.GetSpotPlacementScoresInput{
+		InstanceTypes:                   []string{instanceType},
+		TargetCapacity:                  aws.Int32(1),
+		TargetCapacityUnitType:          types.TargetCapacityUnitTypeUnits,
+		SingleAvailabilityZone:          aws.Bool(true),
+	})
+	if err != nil || len(out.SpotPlacementScores) == 0 {
+		return 0.8
+	}
+	for _, s := range out.SpotPlacementScores {
+		if s.AvailabilityZoneId != nil && s.Score != nil {
+			// Score 1-10 → normalize to 0.1..1.0
+			return float64(*s.Score) / 10.0
+		}
+	}
+	return 0.8
+}
+
+// GetOnDemandPrice trả về giá trị on-demand ($/hr) — khớp types.OnDemandPrices
 func (p *PricingClient) GetOnDemandPrice(instanceType string) float64 {
 	odPrices := map[string]float64{
-		"m5.large":   0.120,
-		"c5.xlarge":  0.196,
-		"r5.large":   0.152,
-		"m5.xlarge":  0.240,
-		"c5.2xlarge": 0.392,
+		"m5.large":   0.096,
+		"c5.xlarge":  0.170,
+		"r5.large":   0.126,
+		"m5.xlarge":  0.192,
+		"c5.2xlarge": 0.340,
 	}
 	if price, ok := odPrices[instanceType]; ok {
 		return price

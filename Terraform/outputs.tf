@@ -53,6 +53,16 @@ output "worker_iam_profile_name" {
   value       = aws_iam_instance_profile.worker.name
 }
 
+output "worker_launch_template_id" {
+  description = "Launch Template ID — controller dùng để launch spot workers"
+  value       = aws_launch_template.worker.id
+}
+
+output "worker_launch_template_name" {
+  description = "Launch Template name"
+  value       = aws_launch_template.worker.name
+}
+
 output "alert_topic_arn" {
   description = "SNS topic cho alerts — confirm subscription qua email"
   value       = aws_sns_topic.alerts.arn

@@ -40,3 +40,10 @@ jenkins_admin_pass = "change-me-strong-password"
 
 # Jenkins Master URL — điền IP của DO droplet (hoặc EC2 nếu chạy trên AWS)
 jenkins_master_url = "http://YOUR_DROPLET_IP:8080"
+
+# S3 bucket chứa DVC training data (tạo bucket trước rồi dvc push)
+dvc_data_bucket = "your-bucket-name"
+
+# AMI ID cho worker spot — Ubuntu 24 đã bake CloudWatch agent + Java 21
+# Tạo bằng cách: launch instance với jenkins_agent.sh, rồi aws ec2 create-image
+worker_ami_id = "ami-0ef3d01dbe6bfbd4d"
