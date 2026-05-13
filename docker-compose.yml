@@ -1,0 +1,31 @@
+services:
+    promtail:
+      image: grafana/promtail:latest
+      container_name: promtail
+      restart: unless-stopped
+      volumes:
+        - /var/log:/var/log:ro
+        - /var/run/docker.sock:/var/run/docker.sock:ro
+        - ./promtail/promtail.yml:/etc/promtail/config.yml:ro
+      networks:
+        - controller
+      deploy:
+        resources:
+          limits:
+            memory: 128m
+            cpus: "0.2"
+    
+    controller:
+      image: ribun/spot-rl-agent:v1.0
+      container_name: controller
+      restart: unless-stopped
+      env_file: ./configs/.env
+      volumes:
+        - ./models:/opt/spot-rl/models:ro
+      networks:
+        - controller
+      ports:
+        - "9091:9091"
+      
+          
+      
