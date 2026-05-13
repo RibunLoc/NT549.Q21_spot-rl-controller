@@ -98,8 +98,13 @@ func loadConfig() Config {
 
 func main() {
 	log.SetFlags(log.Ltime | log.Lshortfile)
-	inference.SetSharedLibraryPath("./onnxruntime.dll")
 	_ = godotenv.Load("configs/.env")
+
+	// ORT_LIB_PATH="" → dùng system lib (ldconfig đã chạy trong container).
+	// Trên Windows dev: set ORT_LIB_PATH=./onnxruntime.dll trong configs/.env.
+	if ortPath := os.Getenv("ORT_LIB_PATH"); ortPath != "" {
+		inference.SetSharedLibraryPath(ortPath)
+	}
 
 	log.Println("=== spot-rl-controller starting ===")
 	cfg := loadConfig()

@@ -5,7 +5,7 @@ FROM golang:1.24-bookworm AS builder
 WORKDIR /src
 
 # Tải ONNX Runtime cho Linux x64
-ARG ONNX_VERSION=1.20.1
+ARG ONNX_VERSION=1.24.1
 RUN apt-get update -qq && apt-get install -y --no-install-recommends wget ca-certificates && \
     wget -q "https://github.com/microsoft/onnxruntime/releases/download/v${ONNX_VERSION}/onnxruntime-linux-x64-${ONNX_VERSION}.tgz" \
          -O /tmp/ort.tgz && \
@@ -34,6 +34,8 @@ RUN go build -tags cgo -o /controller ./cmd/controller
 FROM debian:bookworm-slim
 
 # ORT shared lib cần tại runtime
+RUN apt-get update -qq && apt-get install -y --no-install-recommends ca-certificates && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /opt/onnxruntime/lib/libonnxruntime.so* /usr/local/lib/
 RUN ldconfig
 
@@ -42,7 +44,9 @@ COPY --from=builder /controller /usr/local/bin/controller
 # Model và config được mount vào /opt/spot-rl
 WORKDIR /opt/spot-rl
 
-# Health check đơn giản: process còn chạy không
+# Trỏ onnxruntime_go tới đúng tên lib trên Linux (dlopen runtime)
+ENV ORT_LIB_PATH=/usr/local/lib/libonnxruntime.so
+
 HEALTHCHECK --interval=60s --timeout=5s --retries=3 \
     CMD pgrep controller || exit 1
 
