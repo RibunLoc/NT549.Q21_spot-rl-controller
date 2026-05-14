@@ -261,15 +261,16 @@ func main() {
 
 // metricsCache giữ last-known values để refresh goroutine re-expose mà không cần gọi AWS.
 type metricsCache struct {
-	mu       sync.RWMutex
-	snapshot metrics.StateSnapshot
-	pools    []metrics.PoolSnapshot
-	spot     float64
-	od       float64
-	pending  float64
-	running  float64
-	cost     float64
-	sla      float64
+	mu           sync.RWMutex
+	snapshot     metrics.StateSnapshot
+	pools        []metrics.PoolSnapshot
+	spot         float64
+	od           float64
+	pending      float64
+	running      float64
+	cost         float64
+	sla          float64
+	prevSpotCount int // spot count bước trước — để tính interrupt thực tế
 }
 
 func newMetricsCache() *metricsCache { return &metricsCache{} }
@@ -376,7 +377,26 @@ func runStep(
 			log.Printf("[jenkins] build rate warn: %v — fallback forecast", err)
 		}
 	}
-	s, err := collector.Collect(ctx, pools, depth.Pending, depth.Running, 0, buildsLastHour)
+
+	// Tính interrupt thực tế: so sánh spot count hiện tại với bước trước.
+	// Nếu spot giảm mà controller không ra RELEASE step này → AWS reclaim.
+	currentSpot := 0
+	for _, p := range pools {
+		currentSpot += p.SpotCount
+	}
+	cache.mu.RLock()
+	prevSpot := cache.prevSpotCount
+	cache.mu.RUnlock()
+	stepInterrupts := 0
+	if prevSpot > 0 && currentSpot < prevSpot {
+		stepInterrupts = prevSpot - currentSpot
+		log.Printf("[interrupt] detected %d spot interruption(s) (prev=%d cur=%d)", stepInterrupts, prevSpot, currentSpot)
+	}
+	cache.mu.Lock()
+	cache.prevSpotCount = currentSpot
+	cache.mu.Unlock()
+
+	s, err := collector.Collect(ctx, pools, depth.Pending, depth.Running, stepInterrupts, buildsLastHour)
 	if err != nil {
 		return fmt.Errorf("collect: %w", err)
 	}
