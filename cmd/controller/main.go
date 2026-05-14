@@ -26,6 +26,7 @@ import (
 	"os"
 	"os/signal"
 	"strconv"
+	"sync"
 	"syscall"
 	"time"
 
@@ -45,17 +46,19 @@ import (
 
 // Config từ env vars.
 type Config struct {
-	ModelPath    string
-	AMIID        string
-	LoopInterval time.Duration
-	EpisodeSteps int
-	SqsQueueUrl  string
-	AZSubnets    awsclient.AZSubnetMap
-	ShadowMode   bool // true = log decisions, không execute
-	JenkinsURL   string
-	JenkinsUser  string
-	JenkinsToken string
-	MetricsAddr  string // HTTP addr cho /metrics, e.g. ":9090"
+	ModelPath          string
+	AMIID              string
+	LoopInterval       time.Duration
+	EpisodeSteps       int
+	SqsQueueUrl        string
+	AZSubnets          awsclient.AZSubnetMap
+	ShadowMode         bool // true = log decisions, không execute
+	JenkinsURL         string
+	JenkinsUser        string
+	JenkinsToken       string
+	MetricsAddr        string        // HTTP addr cho /metrics, e.g. ":9091"
+	WorkloadRefreshSec time.Duration // poll Jenkins pending/running (default 30s)
+	MetricsRefreshSec  time.Duration // re-flush cached metrics lên Prometheus (default 15s)
 }
 
 func loadConfig() Config {
@@ -78,26 +81,31 @@ func loadConfig() Config {
 		return v == "1" || v == "true" || v == "yes" || (v == "" && fb)
 	}
 	return Config{
-		ModelPath:    getEnv("MODEL_PATH", "models/dqn_stable.onnx"),
-		AMIID:        getEnv("AMI_ID", ""),
-		LoopInterval: time.Duration(getInt("LOOP_INTERVAL_SEC", 900)) * time.Second,
-		EpisodeSteps: getInt("EPISODE_STEPS", 672),
-		SqsQueueUrl:  getEnv("SQS_QUEUE_URL", ""),
+		ModelPath:          getEnv("MODEL_PATH", "models/dqn_stable.onnx"),
+		AMIID:              getEnv("AMI_ID", ""),
+		LoopInterval:       time.Duration(getInt("LOOP_INTERVAL_SEC", 900)) * time.Second,
+		EpisodeSteps:       getInt("EPISODE_STEPS", 672),
+		SqsQueueUrl:        getEnv("SQS_QUEUE_URL", ""),
 		AZSubnets: awsclient.AZSubnetMap{
 			types.AZNames[0]: getEnv("SUBNET_AZ_A", ""),
 			types.AZNames[1]: getEnv("SUBNET_AZ_B", ""),
 			types.AZNames[2]: getEnv("SUBNET_AZ_C", ""),
 		},
-		ShadowMode:   getBool("SHADOW_MODE", true),
-		JenkinsURL:   getEnv("JENKINS_URL", ""),
-		JenkinsUser:  getEnv("JENKINS_USER", ""),
-		JenkinsToken: getEnv("JENKINS_TOKEN", ""),
-		MetricsAddr:  getEnv("METRICS_ADDR", ":9091"),
+		ShadowMode:         getBool("SHADOW_MODE", true),
+		JenkinsURL:         getEnv("JENKINS_URL", ""),
+		JenkinsUser:        getEnv("JENKINS_USER", ""),
+		JenkinsToken:       getEnv("JENKINS_TOKEN", ""),
+		MetricsAddr:        getEnv("METRICS_ADDR", ":9091"),
+		WorkloadRefreshSec: time.Duration(getInt("WORKLOAD_REFRESH_SEC", 30)) * time.Second,
+		MetricsRefreshSec:  time.Duration(getInt("METRICS_REFRESH_SEC", 15)) * time.Second,
 	}
 }
 
 func main() {
-	log.SetFlags(log.Ltime | log.Lshortfile)
+	log.SetFlags(log.Ldate | log.Ltime | log.Lshortfile)
+	if vnLoc, err := time.LoadLocation("Asia/Ho_Chi_Minh"); err == nil {
+		time.Local = vnLoc
+	}
 	_ = godotenv.Load("configs/.env")
 
 	// ORT_LIB_PATH="" → dùng system lib (ldconfig đã chạy trong container).
@@ -173,13 +181,68 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
+	// metricsCache giữ snapshot metrics cuối cùng để goroutine refresh đọc thread-safe.
+	cache := newMetricsCache()
+
+	// Goroutine 1: re-flush toàn bộ cached metrics lên Prometheus — METRICS_REFRESH_SEC (default 15s).
+	go func() {
+		t := time.NewTicker(cfg.MetricsRefreshSec)
+		defer t.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-t.C:
+				cache.flush()
+			}
+		}
+	}()
+	log.Printf("[metrics] cache flush goroutine started (interval: %s)", cfg.MetricsRefreshSec)
+
+	// Goroutine 2: poll Jenkins pending/running/spot/od — WORKLOAD_REFRESH_SEC (default 30s).
+	// Chỉ update PendingJobs, RunningJobs, SpotInstances, OnDemandInstances — không cần full step.
+	if jenkinsClient != nil {
+		go func() {
+			t := time.NewTicker(cfg.WorkloadRefreshSec)
+			defer t.Stop()
+			for {
+				select {
+				case <-ctx.Done():
+					return
+				case <-t.C:
+					d, err := jenkinsClient.GetQueueDepth(ctx)
+					if err != nil {
+						log.Printf("[workload-refresh] jenkins error: %v", err)
+						continue
+					}
+					spotCount, odCount := 0, 0
+					for ti := range types.InstanceTypes {
+						for ai := range types.AZNames {
+							counts, err := ec2Client.GetRunningInstancesByTypeAZ(ctx, types.InstanceTypes[ti], types.AZNames[ai])
+							if err == nil {
+								spotCount += counts.Spot
+								odCount += counts.OnDemand
+							}
+						}
+					}
+					metrics.PendingJobs.Set(float64(d.Pending))
+					metrics.RunningJobs.Set(float64(d.Running))
+					metrics.SpotInstances.Set(float64(spotCount))
+					metrics.OnDemandInstances.Set(float64(odCount))
+					cache.updateWorkload(float64(d.Pending), float64(d.Running), float64(spotCount), float64(odCount))
+				}
+			}
+		}()
+		log.Printf("[metrics] workload refresh goroutine started (interval: %s)", cfg.WorkloadRefreshSec)
+	}
+
 	log.Printf("Control loop started (interval: %s, shadow=%v)", cfg.LoopInterval, cfg.ShadowMode)
 
 	ticker := time.NewTicker(cfg.LoopInterval)
 	defer ticker.Stop()
 
 	// Run 1 step ngay khi start (không đợi tick đầu).
-	if err := runStep(ctx, collector, model, executor, guard, pricingClient, ec2Client, sqsClient, jenkinsClient, cwClient, cfg); err != nil {
+	if err := runStep(ctx, collector, model, executor, guard, pricingClient, ec2Client, sqsClient, jenkinsClient, cwClient, cfg, cache); err != nil {
 		log.Printf("[ERROR] initial step: %v", err)
 	}
 
@@ -189,11 +252,62 @@ func main() {
 			log.Println("Shutting down gracefully...")
 			return
 		case <-ticker.C:
-			if err := runStep(ctx, collector, model, executor, guard, pricingClient, ec2Client, sqsClient, jenkinsClient, cwClient, cfg); err != nil {
+			if err := runStep(ctx, collector, model, executor, guard, pricingClient, ec2Client, sqsClient, jenkinsClient, cwClient, cfg, cache); err != nil {
 				log.Printf("[ERROR] step: %v", err)
 			}
 		}
 	}
+}
+
+// metricsCache giữ last-known values để refresh goroutine re-expose mà không cần gọi AWS.
+type metricsCache struct {
+	mu       sync.RWMutex
+	snapshot metrics.StateSnapshot
+	pools    []metrics.PoolSnapshot
+	spot     float64
+	od       float64
+	pending  float64
+	running  float64
+	cost     float64
+	sla      float64
+}
+
+func newMetricsCache() *metricsCache { return &metricsCache{} }
+
+func (c *metricsCache) update(ss metrics.StateSnapshot, ps []metrics.PoolSnapshot, spot, od, pending, running, cost, sla float64) {
+	c.mu.Lock()
+	c.snapshot = ss
+	c.pools = ps
+	c.spot = spot
+	c.od = od
+	c.pending = pending
+	c.running = running
+	c.cost = cost
+	c.sla = sla
+	c.mu.Unlock()
+}
+
+// updateWorkload cập nhật chỉ 4 dynamic fields — gọi từ workload-refresh goroutine.
+func (c *metricsCache) updateWorkload(pending, running, spot, od float64) {
+	c.mu.Lock()
+	c.pending = pending
+	c.running = running
+	c.spot = spot
+	c.od = od
+	c.mu.Unlock()
+}
+
+func (c *metricsCache) flush() {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	metrics.RecordStateMetrics(c.snapshot)
+	metrics.RecordPoolMetrics(c.pools)
+	metrics.SpotInstances.Set(c.spot)
+	metrics.OnDemandInstances.Set(c.od)
+	metrics.PendingJobs.Set(c.pending)
+	metrics.RunningJobs.Set(c.running)
+	metrics.HourlyCost.Set(c.cost)
+	metrics.SLAHealth.Set(c.sla)
 }
 
 // runStep: 1 vòng lặp collect → predict → safety → execute.
@@ -216,6 +330,7 @@ func runStep(
 	j *jenkins.Client,
 	cw *awsclient.CloudWatchClient,
 	cfg Config,
+	cache *metricsCache,
 ) error {
 	t0 := time.Now()
 	defer func() { metrics.StepDuration.Observe(time.Since(t0).Seconds()) }()
@@ -268,9 +383,9 @@ func runStep(
 	log.Printf("[state] pending=%d running=%d spot=%d od=%d cost=$%.3f/h",
 		s.PendingJobs, s.RunningJobs, s.NumSpot, s.NumOnDemand, s.HourlyCost)
 
-	// Record state diagnostic metrics
+	// Build snapshot cho metrics cache — flush mỗi 1 phút bởi goroutine riêng.
 	sm := collector.LastStateMetrics()
-	metrics.RecordStateMetrics(metrics.StateSnapshot{
+	ss := metrics.StateSnapshot{
 		ForecastJobs:         sm.ForecastJobs,
 		BuildsLastHour:       sm.BuildsLastHour,
 		WorkloadTrend:        sm.WorkloadTrend,
@@ -280,20 +395,10 @@ func runStep(
 		AZSpread:             sm.AZSpread,
 		CheaperSpotAvailable: sm.CheaperSpotAvailable,
 		SLARiskScore:         sm.SLARiskScore,
-	})
-
-	// Record fleet + workload metrics
-	metrics.SpotInstances.Set(float64(s.NumSpot))
-	metrics.OnDemandInstances.Set(float64(s.NumOnDemand))
-	metrics.PendingJobs.Set(float64(s.PendingJobs))
-	metrics.RunningJobs.Set(float64(s.RunningJobs))
-	metrics.HourlyCost.Set(s.HourlyCost)
-	metrics.SLAHealth.Set(collector.SLAHealth())
-
-	// Record per-pool state features — dùng để monitoring và export training data
-	snapshots := make([]metrics.PoolSnapshot, 0, len(pools))
+	}
+	poolSnaps := make([]metrics.PoolSnapshot, 0, len(pools))
 	for _, p := range pools {
-		snapshots = append(snapshots, metrics.PoolSnapshot{
+		poolSnaps = append(poolSnaps, metrics.PoolSnapshot{
 			InstanceType:  types.InstanceTypes[p.TypeIdx],
 			AZ:            types.AZNames[p.AZIdx],
 			SpotPrice:     p.SpotPrice,
@@ -307,7 +412,13 @@ func runStep(
 			PriceCV24h:    p.PriceCV24h,
 		})
 	}
-	metrics.RecordPoolMetrics(snapshots)
+	cache.update(ss, poolSnaps,
+		float64(s.NumSpot), float64(s.NumOnDemand),
+		float64(s.PendingJobs), float64(s.RunningJobs),
+		s.HourlyCost, collector.SLAHealth(),
+	)
+	// Flush ngay lần đầu sau mỗi step — goroutine tiếp tục flush mỗi 1 phút.
+	cache.flush()
 
 	// 4. Build action mask — chỉ argmax trên actions hợp lệ
 	mask := state.BuildActionMask(pools, depth.Pending, depth.Running)

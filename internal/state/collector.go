@@ -232,7 +232,8 @@ func (c *Collector) Collect(
 	c.pendingHistory = pushTrim(c.pendingHistory, pendingJobs, pendingHistoryLen)
 	// forecast_1h: dùng build arrival rate 1h qua × hourly profile ratio (giờ tới / giờ hiện tại)
 	// Fallback về pending*1.2 nếu chưa có Jenkins history
-	now2 := time.Now()
+	vnLoc, _ := time.LoadLocation("Asia/Ho_Chi_Minh")
+	now2 := time.Now().In(vnLoc)
 	curHour := now2.Hour()
 	nextHour := (curHour + 1) % 24
 	// Khớp HOURLY_PROFILE trong envs/workload_generator.py
@@ -285,8 +286,8 @@ func (c *Collector) Collect(
 		clamp01F(avgRAMUtil),  // avg_ram_demand [26]
 	)
 
-	// 6) Time: hour, day, progress
-	now := time.Now()
+	// 6) Time: hour, day, progress — dùng Asia/Ho_Chi_Minh khớp training data
+	now := time.Now().In(vnLoc)
 	progress := math.Min(time.Since(c.startTime).Seconds()/(float64(c.episodeSteps)*900.0), 1.0) // 15min/step
 	feats = append(feats,
 		float32(now.Hour())/23.0,

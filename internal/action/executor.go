@@ -67,6 +67,7 @@ func (e *Executor) Execute(ctx context.Context, action types.Action, pendingJobs
 		return nil
 	}
 
+	e.ec2.SetInstanceType(d.InstanceType)
 	if err := e.ec2.SetAZ(d.AZ); err != nil {
 		return fmt.Errorf("set AZ %s: %w", d.AZ, err)
 	}

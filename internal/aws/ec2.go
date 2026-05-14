@@ -74,7 +74,7 @@ func (c *EC2Client) launchTemplateSpec() *types.LaunchTemplateSpecification {
 	}
 }
 
-// SetAZ cập nhật AZ và subnet hiện tại — gọi trước khi request instances
+// SetAZ cập nhật AZ và subnet hiện tại — gọi trước khi request instances.
 func (c *EC2Client) SetAZ(az string) error {
 	subnet, ok := c.azSubnets[az]
 	if !ok {
@@ -84,6 +84,12 @@ func (c *EC2Client) SetAZ(az string) error {
 	c.subnetID = subnet
 	log.Printf("[ec2] switched to AZ=%s subnet=%s", az, subnet)
 	return nil
+}
+
+// SetInstanceType cập nhật instance type hiện tại — gọi trước khi request instances.
+func (c *EC2Client) SetInstanceType(instanceType string) {
+	c.instanceType = instanceType
+	log.Printf("[ec2] switched to instanceType=%s", instanceType)
 }
 
 // InstanceCount là số lượng instances đang chạy

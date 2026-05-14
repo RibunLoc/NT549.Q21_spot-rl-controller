@@ -14,7 +14,7 @@ services:
             cpus: "0.2"
     
     controller:
-      image: ribun/spot-rl-agent:v1.0
+      image: ribun/spot-rl-agent:v2.1
       container_name: controller
       restart: unless-stopped
       env_file: ./configs/.env

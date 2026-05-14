@@ -43,8 +43,8 @@ var InstanceTypes = [NTypes]string{
 // VCPU per instance type — khớp catalog.
 var InstanceVCPUs = [NTypes]int{2, 4, 2, 4, 8}
 
-// On-demand price per type ($/hour, us-east-1).
-var OnDemandPrices = [NTypes]float64{0.096, 0.170, 0.126, 0.192, 0.340}
+// On-demand price per type ($/hour, ap-southeast-1).
+var OnDemandPrices = [NTypes]float64{0.12, 0.196, 0.152, 0.24, 0.392}
 
 // AZ names — adjust theo region triển khai. Default ap-southeast-1.
 var AZNames = [NAZs]string{

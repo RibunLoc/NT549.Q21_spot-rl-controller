@@ -230,11 +230,11 @@ func (p *PricingClient) GetSpotPlacementScore(ctx context.Context, instanceType,
 // GetOnDemandPrice trả về giá trị on-demand ($/hr) — khớp types.OnDemandPrices
 func (p *PricingClient) GetOnDemandPrice(instanceType string) float64 {
 	odPrices := map[string]float64{
-		"m5.large":   0.096,
-		"c5.xlarge":  0.170,
-		"r5.large":   0.126,
-		"m5.xlarge":  0.192,
-		"c5.2xlarge": 0.340,
+		"m5.large":   0.12,
+		"c5.xlarge":  0.196,
+		"r5.large":   0.152,
+		"m5.xlarge":  0.24,
+		"c5.2xlarge": 0.392,
 	}
 	if price, ok := odPrices[instanceType]; ok {
 		return price
