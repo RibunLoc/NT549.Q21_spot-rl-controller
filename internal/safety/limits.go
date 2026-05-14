@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"strconv"
 	"sync"
 	"time"
 
@@ -23,11 +24,32 @@ type Limits struct {
 }
 
 func DefaultLimits() Limits {
+	minInterval := 5 * time.Minute
+	if v := os.Getenv("SAFETY_MIN_INTERVAL_SEC"); v != "" {
+		if secs, err := strconv.Atoi(v); err == nil && secs > 0 {
+			minInterval = time.Duration(secs) * time.Second
+		}
+	}
+
+	maxFleet := 10
+	if v := os.Getenv("SAFETY_MAX_FLEET"); v != "" {
+		if n, err := strconv.Atoi(v); err == nil && n > 0 {
+			maxFleet = n
+		}
+	}
+
+	maxCost := 5.0
+	if v := os.Getenv("SAFETY_MAX_HOURLY"); v != "" {
+		if f, err := strconv.ParseFloat(v, 64); err == nil && f > 0 {
+			maxCost = f
+		}
+	}
+
 	return Limits{
-		MaxFleetSize:        10,
+		MaxFleetSize:        maxFleet,
 		MaxActionsPerHour:   30,
-		MaxHourlyCost:       5.0,
-		MinDecisionInterval: 5 * time.Minute,
+		MaxHourlyCost:       maxCost,
+		MinDecisionInterval: minInterval,
 		KillSwitchPath:      "/etc/spot-rl/killswitch",
 	}
 }
