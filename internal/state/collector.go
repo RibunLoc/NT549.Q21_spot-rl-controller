@@ -74,7 +74,26 @@ type Collector struct {
 
 	// SLA EMA
 	slaHealth float64
+
+	// Last step diagnostics — expose qua LastStateMetrics()
+	lastMetrics StateMetrics
 }
+
+// StateMetrics là các giá trị diagnostic từ step cuối — dùng để record Prometheus metrics.
+type StateMetrics struct {
+	ForecastJobs         float64
+	BuildsLastHour       int
+	WorkloadTrend        float64
+	InterruptStreakRate   float64
+	BudgetSpentRatio     float64
+	SpotRatio            float64
+	AZSpread             float64
+	CheaperSpotAvailable float64
+	SLARiskScore         float64
+}
+
+// LastStateMetrics trả về diagnostics từ step vừa Collect() — gọi sau Collect().
+func (c *Collector) LastStateMetrics() StateMetrics { return c.lastMetrics }
 
 func NewCollector(ec2 *awsclient.EC2Client, sqs *awsclient.SQSClient, episodeSteps int) *Collector {
 	return &Collector{
@@ -99,6 +118,7 @@ func (c *Collector) Collect(
 	pools [types.NPools]types.PoolInfo,
 	pendingJobs, runningJobs int,
 	stepInterrupts int,
+	buildsLastHour int,
 ) (types.State, error) {
 	feats := make([]float32, 0, types.StateDim)
 
@@ -210,7 +230,25 @@ func (c *Collector) Collect(
 
 	// 5) Workload: pending, running, forecast_1h, queue_wait, avg_cpu_demand, avg_ram_demand
 	c.pendingHistory = pushTrim(c.pendingHistory, pendingJobs, pendingHistoryLen)
-	forecast := float64(pendingJobs) * 1.2 // simple forecast
+	// forecast_1h: dùng build arrival rate 1h qua × hourly profile ratio (giờ tới / giờ hiện tại)
+	// Fallback về pending*1.2 nếu chưa có Jenkins history
+	now2 := time.Now()
+	curHour := now2.Hour()
+	nextHour := (curHour + 1) % 24
+	// Khớp HOURLY_PROFILE trong envs/workload_generator.py
+	hourlyProfile := [24]float64{
+		0.3, 0.2, 0.2, 0.2, 0.3, 0.5,
+		0.7, 0.9, 1.2, 1.5, 1.6, 1.4,
+		1.2, 1.5, 1.8, 2.0, 1.8, 1.5,
+		1.2, 1.0, 0.8, 0.6, 0.5, 0.4,
+	}
+	var forecast float64
+	if buildsLastHour > 0 {
+		ratio := hourlyProfile[nextHour] / math.Max(hourlyProfile[curHour], 0.1)
+		forecast = float64(buildsLastHour) * ratio
+	} else {
+		forecast = float64(pendingJobs) * 1.2
+	}
 	avgWait := 0.0
 	if len(c.pendingHistory) > 0 {
 		s := 0
@@ -423,6 +461,33 @@ func (c *Collector) Collect(
 
 	if len(feats) != types.StateDim {
 		return types.State{}, fmt.Errorf("state vector length %d != %d", len(feats), types.StateDim)
+	}
+
+	// Tính workload trend để expose metrics
+	wTrend := 0.0
+	if len(c.pendingHistory) >= 2 {
+		old := c.pendingHistory[0]
+		cur := c.pendingHistory[len(c.pendingHistory)-1]
+		wTrend = math.Tanh(float64(cur-old) / math.Max(float64(old), 1))
+	}
+	spotRatioM := 0.0
+	if totalSpot+totalOD > 0 {
+		spotRatioM = float64(totalSpot) / float64(totalSpot+totalOD)
+	}
+	budgetRatioM := 0.0
+	if c.cumulativeBaselineOD > 1e-6 {
+		budgetRatioM = c.totalCost / c.cumulativeBaselineOD
+	}
+	c.lastMetrics = StateMetrics{
+		ForecastJobs:         forecast,
+		BuildsLastHour:       buildsLastHour,
+		WorkloadTrend:        wTrend,
+		InterruptStreakRate:   rate,
+		BudgetSpentRatio:     budgetRatioM,
+		SpotRatio:            spotRatioM,
+		AZSpread:             azSpread,
+		CheaperSpotAvailable: float64(cheaperAvail),
+		SLARiskScore:         slaRisk,
 	}
 
 	var s types.State

@@ -229,6 +229,43 @@ func (c *Client) markOffline(ctx context.Context, agentName, reason string) erro
 	return c.post(ctx, path, "")
 }
 
+// GetBuildRateLastHour đếm số builds đã được trigger trong 1h qua.
+// Dùng để tính arrival rate thực tế → forecast_1h trong state collector.
+func (c *Client) GetBuildRateLastHour(ctx context.Context) (int, error) {
+	// Lấy 100 builds gần nhất từ tất cả jobs, chỉ cần timestamp
+	body, err := c.get(ctx, "/api/json?tree=jobs[builds[timestamp,result]{,100}]")
+	if err != nil {
+		return 0, fmt.Errorf("build history api: %w", err)
+	}
+
+	type build struct {
+		Timestamp int64  `json:"timestamp"` // milliseconds
+		Result    string `json:"result"`
+	}
+	type job struct {
+		Builds []build `json:"builds"`
+	}
+	type resp struct {
+		Jobs []job `json:"jobs"`
+	}
+
+	var r resp
+	if err := json.Unmarshal(body, &r); err != nil {
+		return 0, fmt.Errorf("build history parse: %w", err)
+	}
+
+	cutoff := time.Now().Add(-1 * time.Hour).UnixMilli()
+	count := 0
+	for _, j := range r.Jobs {
+		for _, b := range j.Builds {
+			if b.Timestamp >= cutoff {
+				count++
+			}
+		}
+	}
+	return count, nil
+}
+
 // ── HTTP helpers ──────────────────────────────────────
 
 func (c *Client) get(ctx context.Context, path string) ([]byte, error) {

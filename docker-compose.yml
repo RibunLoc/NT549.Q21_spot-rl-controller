@@ -4,11 +4,9 @@ services:
       container_name: promtail
       restart: unless-stopped
       volumes:
-        - /var/log:/var/log:ro
         - /var/run/docker.sock:/var/run/docker.sock:ro
-        - ./promtail/promtail.yml:/etc/promtail/config.yml:ro
-      networks:
-        - controller
+        - ./promtail.yml:/etc/promtail/config.yml:ro
+      command: -config.file=/etc/promtail/config.yml
       deploy:
         resources:
           limits:
@@ -22,8 +20,6 @@ services:
       env_file: ./configs/.env
       volumes:
         - ./models:/opt/spot-rl/models:ro
-      networks:
-        - controller
       ports:
         - "9091:9091"
       

@@ -253,12 +253,34 @@ func runStep(
 		depth.Pending, depth.Running, workloadSource(j))
 
 	// 3. Build state vector
-	s, err := collector.Collect(ctx, pools, depth.Pending, depth.Running, 0)
+	buildsLastHour := 0
+	if j != nil {
+		if n, err := j.GetBuildRateLastHour(ctx); err == nil {
+			buildsLastHour = n
+		} else {
+			log.Printf("[jenkins] build rate warn: %v — fallback forecast", err)
+		}
+	}
+	s, err := collector.Collect(ctx, pools, depth.Pending, depth.Running, 0, buildsLastHour)
 	if err != nil {
 		return fmt.Errorf("collect: %w", err)
 	}
 	log.Printf("[state] pending=%d running=%d spot=%d od=%d cost=$%.3f/h",
 		s.PendingJobs, s.RunningJobs, s.NumSpot, s.NumOnDemand, s.HourlyCost)
+
+	// Record state diagnostic metrics
+	sm := collector.LastStateMetrics()
+	metrics.RecordStateMetrics(metrics.StateSnapshot{
+		ForecastJobs:         sm.ForecastJobs,
+		BuildsLastHour:       sm.BuildsLastHour,
+		WorkloadTrend:        sm.WorkloadTrend,
+		InterruptStreakRate:   sm.InterruptStreakRate,
+		BudgetSpentRatio:     sm.BudgetSpentRatio,
+		SpotRatio:            sm.SpotRatio,
+		AZSpread:             sm.AZSpread,
+		CheaperSpotAvailable: sm.CheaperSpotAvailable,
+		SLARiskScore:         sm.SLARiskScore,
+	})
 
 	// Record fleet + workload metrics
 	metrics.SpotInstances.Set(float64(s.NumSpot))
@@ -376,7 +398,7 @@ func fetchAllPools(
 				AZIdx:           ai,
 				SpotPrice:       price,
 				OnDemandPrice:   types.OnDemandPrices[ti],
-				InterruptProb:   estimateInterrupt(price, types.OnDemandPrices[ti]),
+				InterruptProb:   estimateInterrupt(sps),
 				SpotCount:       counts.Spot,
 				OnDemandCount:   counts.OnDemand,
 				VCPUPerInst:     types.InstanceVCPUs[ti],
@@ -394,19 +416,20 @@ func fetchAllPools(
 	return pools, nil
 }
 
-// estimateInterrupt — fallback nếu không có Spot Advisor data.
-// Giá càng cao so OD → AWS ít cần lấy → interrupt thấp.
-func estimateInterrupt(spot, od float64) float64 {
-	if od <= 0 {
-		return 0.05
+// estimateInterrupt — dùng SPS score làm signal chính.
+// SPS [0.1, 1.0] → interrupt [0.45, 0.05]: capacity cao → interrupt thấp.
+// Khớp training distribution: interrupt_prob và sps_score là 2 signals độc lập trong CSV.
+// Fallback 0.8 SPS (từ GetSpotPlacementScores) → ~0.12 interrupt (conservative).
+func estimateInterrupt(sps float64) float64 {
+	if sps <= 0 {
+		sps = 0.8 // fallback khớp GetSpotPlacementScores default
 	}
-	ratio := spot / od
-	p := 0.05 + (1-ratio)*0.1
+	p := 0.50 - (sps-0.1)/0.9*0.44
 	if p < 0.01 {
 		p = 0.01
 	}
-	if p > 0.5 {
-		p = 0.5
+	if p > 0.50 {
+		p = 0.50
 	}
 	return p
 }

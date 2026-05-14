@@ -126,6 +126,44 @@ var (
 		Namespace: ns, Name: "pool_price_cv_24h",
 		Help: "Price coefficient of variation over 24h per pool (std/mean)",
 	}, poolLabels)
+
+	// ── Aggregated state features (từ collector) ──────────────────────────────
+	ForecastJobs = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "forecast_jobs_1h",
+		Help: "Forecasted job arrivals in next 1 hour (Jenkins history × hourly profile ratio)",
+	})
+	BuildsLastHour = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "builds_last_hour",
+		Help: "Actual Jenkins build count in last 1 hour",
+	})
+	WorkloadTrend = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "workload_trend",
+		Help: "Workload trend [-1,1]: tanh((cur-old)/old) over pending history",
+	})
+	InterruptStreakRate = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "interrupt_streak_rate",
+		Help: "Fraction of recent steps with at least 1 interrupt [0-1]",
+	})
+	BudgetSpentRatio = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "budget_spent_ratio",
+		Help: "total_cost / cumulative_baseline_OD — cost efficiency vs pure OD",
+	})
+	SpotRatio = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "spot_ratio",
+		Help: "spot / (spot + od) instance ratio [0-1]",
+	})
+	AZSpread = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "az_price_spread",
+		Help: "Max - min average spot price ratio across AZs",
+	})
+	CheaperSpotAvailable = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "cheaper_spot_available",
+		Help: "1 if a pool exists with spot price >15% cheaper than current running pools",
+	})
+	SLARiskScore = prometheus.NewGauge(prometheus.GaugeOpts{
+		Namespace: ns, Name: "sla_risk_score",
+		Help: "SLA risk: weighted(pending/vcpu + interrupt_streak_rate)",
+	})
 )
 
 // Register đăng ký tất cả metrics vào Prometheus default registry.
@@ -151,6 +189,15 @@ func Register() {
 		PoolRAMUtil,
 		PoolSPSScore,
 		PoolPriceCV,
+		ForecastJobs,
+		BuildsLastHour,
+		WorkloadTrend,
+		InterruptStreakRate,
+		BudgetSpentRatio,
+		SpotRatio,
+		AZSpread,
+		CheaperSpotAvailable,
+		SLARiskScore,
 	)
 }
 
@@ -187,6 +234,32 @@ func RecordPoolMetrics(pools []PoolSnapshot) {
 		PoolSPSScore.With(l).Set(p.SPSScore)
 		PoolPriceCV.With(l).Set(p.PriceCV24h)
 	}
+}
+
+// StateSnapshot là aggregated state features từ collector — để record metrics.
+type StateSnapshot struct {
+	ForecastJobs         float64
+	BuildsLastHour       int
+	WorkloadTrend        float64
+	InterruptStreakRate   float64
+	BudgetSpentRatio     float64
+	SpotRatio            float64
+	AZSpread             float64
+	CheaperSpotAvailable float64
+	SLARiskScore         float64
+}
+
+// RecordStateMetrics cập nhật aggregated state metrics. Gọi mỗi step sau Collect().
+func RecordStateMetrics(s StateSnapshot) {
+	ForecastJobs.Set(s.ForecastJobs)
+	BuildsLastHour.Set(float64(s.BuildsLastHour))
+	WorkloadTrend.Set(s.WorkloadTrend)
+	InterruptStreakRate.Set(s.InterruptStreakRate)
+	BudgetSpentRatio.Set(s.BudgetSpentRatio)
+	SpotRatio.Set(s.SpotRatio)
+	AZSpread.Set(s.AZSpread)
+	CheaperSpotAvailable.Set(s.CheaperSpotAvailable)
+	SLARiskScore.Set(s.SLARiskScore)
 }
 
 // Handler trả về HTTP handler cho /metrics endpoint với Bearer token auth.
