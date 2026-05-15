@@ -23,6 +23,7 @@ const (
 func BuildActionMask(
 	pools [types.NPools]types.PoolInfo,
 	pendingJobs, runningJobs int,
+	forecastJobs float64,
 ) [types.ActionDim]bool {
 	var mask [types.ActionDim]bool
 	for i := range mask {
@@ -42,10 +43,15 @@ func BuildActionMask(
 	}
 
 	needed := pendingJobs + runningJobs
-	// Capacity guard: chỉ block PROVISION khi đã có đủ capacity
-	// Không block khi fleet empty (cho phép bootstrap)
-	capacitySaturated := (totalVCPU >= int(float64(needed)*1.5) && needed > 0 && totalInstances > 0) ||
-		(totalInstances >= 3 && needed == 0 && totalInstances > 0)
+	// Capacity guard: block PROVISION khi không có nhu cầu thực sự.
+	// Dùng forecast để cho phép pre-warm khi spike sắp đến.
+	// - needed == 0 AND forecast < 5: không có job hiện tại và không dự báo spike
+	// - totalVCPU đủ 1.5x needed: đã over-provisioned
+	// - totalInstances >= 3 và không có job: fleet thừa
+	noCurrentDemand := needed == 0 && forecastJobs < 5.0
+	capacitySaturated := noCurrentDemand ||
+		(totalVCPU >= int(float64(needed)*1.5) && needed > 0 && totalInstances > 0) ||
+		(totalInstances >= 3 && needed == 0)
 
 	for ti := 0; ti < types.NTypes; ti++ {
 		odPrice := types.OnDemandPrices[ti]
@@ -60,10 +66,12 @@ func BuildActionMask(
 			}
 
 			// RELEASE
-			if pool.SpotCount == 0 {
+			vcpuPerInst := types.InstanceVCPUs[ti]
+			capacityAfterRelease := totalVCPU - vcpuPerInst
+			if pool.SpotCount == 0 || capacityAfterRelease < runningJobs {
 				mask[encodeAction(types.OpReleaseSpot, ti, ai)] = false
 			}
-			if pool.OnDemandCount == 0 {
+			if pool.OnDemandCount == 0 || capacityAfterRelease < runningJobs {
 				mask[encodeAction(types.OpReleaseOnDemand, ti, ai)] = false
 			}
 

@@ -205,27 +205,45 @@ func (p *PricingClient) GetPriceCV(ctx context.Context, instanceType, az string)
 	return std / mean
 }
 
-// GetSpotPlacementScore gọi DescribeSpotPlacementScores để lấy SPS cho 1 pool.
+// GetSpotPlacementScore gọi GetSpotPlacementScores để lấy SPS cho 1 pool cụ thể.
 // SPS là số nguyên 1-10 (AWS) — chuẩn hóa về [0,1] để khớp training (default 0.8).
 // Fallback 0.8 nếu API không có dữ liệu hoặc lỗi (khớp training fallback).
 func (p *PricingClient) GetSpotPlacementScore(ctx context.Context, instanceType, az string) float64 {
+	// SingleAvailabilityZone=true yêu cầu AWS trả về score per-AZ.
+	// Region được lấy từ AWS config của ec2Client (không cần truyền vào).
 	out, err := p.ec2Client.GetSpotPlacementScores(ctx, &ec2.GetSpotPlacementScoresInput{
-		InstanceTypes:                   []string{instanceType},
-		TargetCapacity:                  aws.Int32(1),
-		TargetCapacityUnitType:          types.TargetCapacityUnitTypeUnits,
-		SingleAvailabilityZone:          aws.Bool(true),
+		InstanceTypes:          []string{instanceType},
+		TargetCapacity:         aws.Int32(1),
+		TargetCapacityUnitType: types.TargetCapacityUnitTypeUnits,
+		SingleAvailabilityZone: aws.Bool(true),
 	})
 	if err != nil || len(out.SpotPlacementScores) == 0 {
 		return 0.8
 	}
+	// SpotPlacementScore chỉ có AvailabilityZoneId (vd: "apse1-az1"), không có AZ name.
+	// Dùng map tĩnh để convert AZ name → AZ ID cho ap-southeast-1.
+	azID := apSoutheast1AZIDs[az]
+	for _, s := range out.SpotPlacementScores {
+		if s.AvailabilityZoneId != nil && *s.AvailabilityZoneId == azID && s.Score != nil {
+			return float64(*s.Score) / 10.0
+		}
+	}
+	// Fallback: nếu không match AZ ID (vd: AZ mới hoặc thiếu mapping), lấy score đầu tiên.
 	for _, s := range out.SpotPlacementScores {
 		if s.AvailabilityZoneId != nil && s.Score != nil {
-			// Score 1-10 → normalize to 0.1..1.0
 			return float64(*s.Score) / 10.0
 		}
 	}
 	return 0.8
 }
+
+// apSoutheast1AZIDs maps AZ name → AZ ID cho region ap-southeast-1 (Singapore).
+var apSoutheast1AZIDs = map[string]string{
+	"ap-southeast-1a": "apse1-az1",
+	"ap-southeast-1b": "apse1-az2",
+	"ap-southeast-1c": "apse1-az3",
+}
+
 
 // GetOnDemandPrice trả về giá trị on-demand ($/hr) — khớp types.OnDemandPrices
 func (p *PricingClient) GetOnDemandPrice(instanceType string) float64 {

@@ -441,7 +441,7 @@ func runStep(
 	cache.flush()
 
 	// 4. Build action mask — chỉ argmax trên actions hợp lệ
-	mask := state.BuildActionMask(pools, depth.Pending, depth.Running)
+	mask := state.BuildActionMask(pools, depth.Pending, depth.Running, sm.ForecastJobs)
 
 	// 5. Inference
 	act, decoded, qValues, err := model.Predict(s, &mask)
@@ -518,22 +518,24 @@ func fetchAllPools(
 			// baseline_savings = 1 - long_term_spot_ratio (0.35) = 0.65 — khớp instance_catalog.py
 			const baselineSavings = 0.65
 
-			// PriceCV: tính từ 24h spot price history (std/mean)
+			// PriceCV: tính từ 24h spot price history (std/mean), per-AZ
 			priceCV := pricing.GetPriceCV(ctx, instType, az)
 
-			// SPS: gọi DescribeSpotPlacementScores, fallback 0.8
+			// SPS: vẫn lấy để expose qua metrics, nhưng không dùng cho interrupt_prob
+			// vì GetSpotPlacementScores không trả về score per-AZ (chỉ AZ tốt nhất).
 			sps := pricing.GetSpotPlacementScore(ctx, instType, az)
 
+			baseRate := defaultBaseRate(instType)
 			pools[idx] = types.PoolInfo{
 				TypeIdx:         ti,
 				AZIdx:           ai,
 				SpotPrice:       price,
 				OnDemandPrice:   types.OnDemandPrices[ti],
-				InterruptProb:   estimateInterrupt(sps),
+				InterruptProb:   estimateInterrupt(baseRate, priceCV),
 				SpotCount:       counts.Spot,
 				OnDemandCount:   counts.OnDemand,
 				VCPUPerInst:     types.InstanceVCPUs[ti],
-				BaseRate:        defaultBaseRate(instType),
+				BaseRate:        baseRate,
 				BaselineSavings: baselineSavings,
 				SPSScore:        sps,
 				PriceCV24h:      priceCV,
@@ -547,20 +549,20 @@ func fetchAllPools(
 	return pools, nil
 }
 
-// estimateInterrupt — dùng SPS score làm signal chính.
-// SPS [0.1, 1.0] → interrupt [0.45, 0.05]: capacity cao → interrupt thấp.
-// Khớp training distribution: interrupt_prob và sps_score là 2 signals độc lập trong CSV.
-// Fallback 0.8 SPS (từ GetSpotPlacementScores) → ~0.12 interrupt (conservative).
-func estimateInterrupt(sps float64) float64 {
-	if sps <= 0 {
-		sps = 0.8 // fallback khớp GetSpotPlacementScores default
+// estimateInterrupt — estimate interrupt prob từ baseRate + priceCV per-AZ.
+// AWS GetSpotPlacementScores không trả về score per-AZ (chỉ trả về AZ tốt nhất),
+// nên SPS không dùng được để phân biệt AZ. Dùng priceCV (std/mean của spot price
+// 24h qua, tính từ DescribeSpotPriceHistory) làm proxy: price volatile → interrupt cao.
+//
+// Formula khớp training distribution [0.02, 0.35], mean ~0.11:
+//   p = baseRate + priceCV * 0.5, clamp [0.02, 0.35]
+func estimateInterrupt(baseRate, priceCV float64) float64 {
+	p := baseRate + priceCV*0.5
+	if p < 0.02 {
+		p = 0.02
 	}
-	p := 0.50 - (sps-0.1)/0.9*0.44
-	if p < 0.01 {
-		p = 0.01
-	}
-	if p > 0.50 {
-		p = 0.50
+	if p > 0.35 {
+		p = 0.35
 	}
 	return p
 }
