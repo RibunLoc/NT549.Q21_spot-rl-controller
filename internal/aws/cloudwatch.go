@@ -11,9 +11,13 @@ import (
 )
 
 // PoolUtil holds CPU and RAM utilization for one (instanceType, AZ) pool.
+// HasData = false khi CloudWatch chưa có datapoint nào (vd: instance vừa tạo
+// chưa đủ 5 phút). Caller phải dùng default thay vì coi như util = 0.
 type PoolUtil struct {
-	CPUUtil float64 // 0..1
-	RAMUtil float64 // 0..1
+	CPUUtil    float64 // 0..1
+	RAMUtil    float64 // 0..1
+	HasCPUData bool
+	HasRAMData bool
 }
 
 // CloudWatchClient fetches per-pool CPU and RAM utilization.
@@ -46,46 +50,36 @@ func (c *CloudWatchClient) GetPoolUtilization(
 	for _, itype := range instanceTypes {
 		for _, az := range azNames {
 			key := itype + "/" + az
-			cpu := c.queryMetric(ctx, itype, az, "CPUUtilization", start, end, period)
+			// Khớp với config CloudWatch Agent trong Terraform/user_data/jenkins_agent.sh:
+			//   cpu_usage_active (totalcpu=true) và mem_used_percent
+			// Cả hai đều push lên namespace CWAgent với interval 60s.
+			cpu, cpuOK := c.queryMetricRaw(ctx, itype, az, "cpu_usage_active", start, end, period)
 			ram, ramOK := c.queryMetricRaw(ctx, itype, az, "mem_used_percent", start, end, period)
-			if !ramOK {
-				// mem_used_percent requires CloudWatch agent; fall back to 50%
-				ram = 50.0
-			}
 			result[key] = PoolUtil{
-				CPUUtil: cpu / 100.0, // CloudWatch returns 0-100
-				RAMUtil: ram / 100.0,
+				CPUUtil:    cpu / 100.0,
+				RAMUtil:    ram / 100.0,
+				HasCPUData: cpuOK,
+				HasRAMData: ramOK,
 			}
 		}
 	}
 	return result
 }
 
-// queryMetric returns the average value of a standard EC2 CloudWatch metric
-// (namespace AWS/EC2) filtered by InstanceType and AvailabilityZone dimensions.
-// Returns (value, ok). value is already in the metric's native unit (e.g. percent 0-100).
-func (c *CloudWatchClient) queryMetric(
-	ctx context.Context,
-	instanceType, az, metricName string,
-	start, end time.Time,
-	period int32,
-) float64 {
-	v, _ := c.queryMetricRaw(ctx, instanceType, az, metricName, start, end, period)
-	return v
-}
-
+// queryMetricRaw returns (avgValue, ok) of a CloudWatch metric for the
+// given (instanceType, az) dimension over [start, end] with the specified period.
+// Returns (0, false) khi metric chưa có datapoint nào (vd: instance mới tạo).
 func (c *CloudWatchClient) queryMetricRaw(
 	ctx context.Context,
 	instanceType, az, metricName string,
 	start, end time.Time,
 	period int32,
 ) (float64, bool) {
-	// Standard EC2 metrics use AWS/EC2 namespace.
-	// Custom agent metrics (mem_used_percent) use CWAgent namespace.
-	namespace := "AWS/EC2"
-	if metricName == "mem_used_percent" {
-		namespace = "CWAgent"
-	}
+	// Tất cả metric custom đều push qua CloudWatch Agent (namespace CWAgent)
+	// với interval 60s. Đặc biệt cpu_usage_active (thay cho EC2 default
+	// CPUUtilization vốn chỉ có datapoint mỗi 5 phút ở basic monitoring,
+	// gây lag khi instance mới tạo).
+	namespace := "CWAgent"
 
 	out, err := c.cw.GetMetricStatistics(ctx, &cloudwatch.GetMetricStatisticsInput{
 		Namespace:  aws.String(namespace),

@@ -23,9 +23,13 @@ var (
 // SCALE_STEP — số instance thay đổi mỗi action. Đặt 1 cho stable demo.
 const SCALE_STEP = 1
 
-// DrainTimeout — thời gian tối đa đợi Jenkins agent drain jobs xong.
-// 2-min AWS interrupt warning → đặt 90s để còn buffer terminate instance.
-const DrainTimeout = 90 * time.Second
+// DrainTimeout — thời gian tối đa đợi Jenkins agent drain jobs xong khi
+// controller chủ động RELEASE/CONVERT/REBALANCE. Đặt đủ lâu để build/test
+// job CI/CD chạy xong (thông thường 5-30 phút), tránh kill job oan.
+//
+// Lưu ý: khi AWS chủ động interrupt Spot, chỉ có 2-min warning từ AWS — case
+// đó được xử lý bởi handler riêng (interrupt listener), không qua hàm này.
+const DrainTimeout = 30 * time.Minute
 
 // Executor wrap EC2 client + Jenkins client + instance registry.
 type Executor struct {

@@ -507,12 +507,28 @@ func fetchAllPools(
 			}
 			counts, _ := ec2.GetRunningInstancesByTypeAZ(ctx, instType, az)
 
+			// Util từ CloudWatch. Khi instance mới tạo chưa có datapoint
+			// (CPUUtilization basic monitoring 5 phút/lần) hoặc khi CloudWatch
+			// Agent chưa được cài (mem_used_percent), dùng default thay vì 0%
+			// để tránh model thấy "fleet idle" và quyết định sai.
+			//
+			// - Pool có instance đang chạy nhưng thiếu data: giả định 50% util
+			//   (mức average vừa phải, không kích hoạt release ngay).
+			// - Pool không có instance nào: util không có ý nghĩa, để 0.
 			util := utilMap[instType+"/"+az]
 			cpuUtil := util.CPUUtil
 			ramUtil := util.RAMUtil
-			if cpuUtil == 0 && ramUtil == 0 {
-				cpuUtil = 0.5
-				ramUtil = 0.5
+			hasInstance := counts.Spot+counts.OnDemand > 0
+			if hasInstance {
+				if !util.HasCPUData {
+					cpuUtil = 0.5
+				}
+				if !util.HasRAMData {
+					ramUtil = 0.5
+				}
+			} else {
+				cpuUtil = 0
+				ramUtil = 0
 			}
 
 			// baseline_savings = 1 - long_term_spot_ratio (0.35) = 0.65 — khớp instance_catalog.py
